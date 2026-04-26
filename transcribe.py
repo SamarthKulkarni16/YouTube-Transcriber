@@ -23,8 +23,9 @@ NOTION_TOKEN       = "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"
 NOTION_PAGE_ID     = "33bdc0ab7de98101af9af7242a4ba23e"
 YOUTUBE_CHANNEL_ID = "UCsexetBmFzWSnDdzLT4H1yQ"
 YOUTUBE_API_KEY    = "AIzaSyBa_ubaqOEoYTnMizttiOm-wqD3aT1SpBM"
-WHISPER_MODEL      = "small"          # tiny/base/small/medium/large
+WHISPER_MODEL      = "small"
 MAX_VIDEOS_PER_RUN = 10
+COOKIES_FILE       = "cookies.txt"
 # ─────────────────────────────────────────────────────────────────
 
 NOTION_HEADERS = {
@@ -33,9 +34,7 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28"
 }
 
-# ── Get last transcribed video ID from Notion page ───────────────
 def get_all_block_text(page_id):
-    """Recursively get all text from a Notion page's blocks."""
     url = f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100"
     full_text = ""
     while url:
@@ -63,14 +62,13 @@ if last_video_id:
 else:
     print("🔖 Page is empty — will transcribe latest videos")
 
-# ── Fetch new videos from YouTube ────────────────────────────────
 from googleapiclient.discovery import build as yt_build
 
 print("\n🔍 Fetching channel videos from YouTube...")
 yt = yt_build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
-channel_resp         = yt.channels().list(part='contentDetails', id=YOUTUBE_CHANNEL_ID).execute()
-uploads_playlist_id  = channel_resp['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+channel_resp        = yt.channels().list(part='contentDetails', id=YOUTUBE_CHANNEL_ID).execute()
+uploads_playlist_id = channel_resp['items'][0]['contentDetails']['relatedPlaylists']['uploads']
 
 all_videos, next_page_token = [], None
 while len(all_videos) < 200:
@@ -92,7 +90,6 @@ while len(all_videos) < 200:
     if not next_page_token:
         break
 
-# Slice to only new videos (oldest first so doc stays in order)
 if last_video_id is None:
     new_videos = list(reversed(all_videos[:MAX_VIDEOS_PER_RUN]))
 else:
@@ -111,7 +108,6 @@ else:
     for v in new_videos:
         print(f"   • {v['title']}")
 
-# ── Transcribe + Save to Notion ───────────────────────────────────
 if new_videos:
     import whisper, yt_dlp
 
@@ -125,6 +121,7 @@ if new_videos:
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': audio_base,
+                'cookiefile': COOKIES_FILE,
                 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'}],
                 'quiet': True, 'no_warnings': True,
             }
@@ -140,55 +137,41 @@ if new_videos:
     def append_to_notion(video, transcription):
         blocks = [
             {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"type": "text", "text": {"content": "Name - "}, "annotations": {"bold": True}},
-                        {"type": "text", "text": {"content": video['title'], "link": {"url": video['url']}},
-                         "annotations": {"bold": True, "color": "blue"}}
-                    ]
-                }
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [
+                    {"type": "text", "text": {"content": "Name - "}, "annotations": {"bold": True}},
+                    {"type": "text", "text": {"content": video['title'], "link": {"url": video['url']}},
+                     "annotations": {"bold": True, "color": "blue"}}
+                ]}
             },
             {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"type": "text", "text": {"content": "Date - "}, "annotations": {"bold": True}},
-                        {"type": "text", "text": {"content": format_date(video['published_at'])}}
-                    ]
-                }
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [
+                    {"type": "text", "text": {"content": "Date - "}, "annotations": {"bold": True}},
+                    {"type": "text", "text": {"content": format_date(video['published_at'])}}
+                ]}
             },
             {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"type": "text", "text": {"content": "Transcribe - "}, "annotations": {"bold": True}},
-                    ]
-                }
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [
+                    {"type": "text", "text": {"content": "Transcribe - "}, "annotations": {"bold": True}},
+                ]}
             },
         ]
-
         chunk_size = 1900
         chunks = [transcription[i:i+chunk_size] for i in range(0, len(transcription), chunk_size)]
         for chunk in chunks:
             blocks.append({
-                "object": "block",
-                "type": "paragraph",
+                "object": "block", "type": "paragraph",
                 "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}
             })
-
         blocks.append({"object": "block", "type": "divider", "divider": {}})
-
         requests.patch(
             f"https://api.notion.com/v1/blocks/{NOTION_PAGE_ID}/children",
             headers=NOTION_HEADERS,
             json={"children": blocks}
         )
 
-    # ── Main loop ─────────────────────────────────────────────────
     for i, video in enumerate(new_videos):
         print(f"[{i+1}/{len(new_videos)}] {video['title']}")
         try:
